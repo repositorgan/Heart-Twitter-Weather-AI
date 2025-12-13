@@ -1,0 +1,25 @@
+# Environment variables - NEVER COMMIT CREDENTIALS
+.env
+
+# Python cache files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual Environment
+venv/
+env/
+ENV/
+
+# Log files
+*.log
+weather_bot.log
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+
+# OS files
+.DS_Store
+Thumbs.db

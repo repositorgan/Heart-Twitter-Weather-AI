@@ -1,0 +1,218 @@
+import tweepy
+import requests
+import schedule
+import time
+import logging
+from datetime import datetime
+from dotenv import load_dotenv
+import os
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Configure logging to track bot activity
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler('weather_bot.log'),
+        logging.StreamHandler()
+    ]
+)
+
+# Twitter API credentials from environment variables
+TWITTER_API_KEY = os.getenv('TWITTER_API_KEY')
+TWITTER_API_SECRET = os.getenv('TWITTER_API_SECRET')
+TWITTER_ACCESS_TOKEN = os.getenv('TWITTER_ACCESS_TOKEN')
+TWITTER_ACCESS_SECRET = os.getenv('TWITTER_ACCESS_SECRET')
+
+# Location coordinates for weather data
+NWS_LATITUDE = os.getenv('NWS_LATITUDE', '43.0389')  # Default: Milwaukee, WI
+NWS_LONGITUDE = os.getenv('NWS_LONGITUDE', '-87.9065')
+
+# Initialize Twitter API v2 client
+def initialize_twitter():
+    """Initialize and return Twitter API client"""
+    try:
+        client = tweepy.Client(
+            consumer_key=TWITTER_API_KEY,
+            consumer_secret=TWITTER_API_SECRET,
+            access_token=TWITTER_ACCESS_TOKEN,
+            access_token_secret=TWITTER_ACCESS_SECRET
+        )
+        logging.info("Twitter API initialized successfully")
+        return client
+    except Exception as e:
+        logging.error(f"Failed to initialize Twitter API: {e}")
+        return None
+
+# Get weather data from National Weather Service API
+def get_weather_forecast():
+    """
+    Fetch weather forecast from NWS API
+    Returns formatted weather string or None if failed
+    """
+    try:
+        # Step 1: Get grid endpoint from coordinates
+        points_url = f"https://api.weather.gov/points/{NWS_LATITUDE},{NWS_LONGITUDE}"
+        headers = {'User-Agent': 'WeatherBot/1.0 (weather.forecast.bot@example.com)'}
+        
+        logging.info(f"Fetching weather for coordinates: {NWS_LATITUDE}, {NWS_LONGITUDE}")
+        points_response = requests.get(points_url, headers=headers, timeout=10)
+        points_response.raise_for_status()
+        points_data = points_response.json()
+        
+        # Step 2: Get forecast URL from points data
+        forecast_url = points_data['properties']['forecast']
+        city = points_data['properties']['relativeLocation']['properties']['city']
+        state = points_data['properties']['relativeLocation']['properties']['state']
+        
+        # Step 3: Fetch actual forecast
+        forecast_response = requests.get(forecast_url, headers=headers, timeout=10)
+        forecast_response.raise_for_status()
+        forecast_data = forecast_response.json()
+        
+        # Step 4: Parse forecast periods (today and tonight)
+        periods = forecast_data['properties']['periods']
+        current_period = periods[0]
+        next_period = periods[1] if len(periods) > 1 else None
+        
+        # Format weather data into tweet
+        weather_text = format_weather_tweet(current_period, next_period, city, state)
+        logging.info("Weather data fetched successfully")
+        return weather_text
+        
+    except requests.exceptions.RequestException as e:
+        logging.error(f"Error fetching weather data: {e}")
+        return None
+    except Exception as e:
+        logging.error(f"Unexpected error in get_weather_forecast: {e}")
+        return None
+
+# Format weather data into a tweet-friendly message
+def format_weather_tweet(current, next_period, city, state):
+    """
+    Format weather forecast into a tweet (under 280 characters)
+    """
+    # Get weather emoji based on conditions
+    emoji = get_weather_emoji(current['shortForecast'])
+    
+    # Build tweet text
+    tweet = f"{emoji} {city}, {state} Weather Forecast {emoji}\n\n"
+    tweet += f"{current['name']}: {current['shortForecast']}\n"
+    tweet += f"Temp: {current['temperature']}°{current['temperatureUnit']}\n"
+    
+    if next_period:
+        tweet += f"\n{next_period['name']}: {next_period['shortForecast']}\n"
+        tweet += f"Temp: {next_period['temperature']}°{next_period['temperatureUnit']}"
+    
+    # Add hashtags if space allows
+    if len(tweet) < 240:
+        tweet += f"\n\n#Weather #Forecast #{state}Weather"
+    
+    # Ensure tweet is under 280 characters
+    if len(tweet) > 280:
+        tweet = tweet[:277] + "..."
+    
+    return tweet
+
+# Get appropriate emoji for weather conditions
+def get_weather_emoji(forecast):
+    """Return weather emoji based on forecast text"""
+    forecast_lower = forecast.lower()
+    
+    if 'sunny' in forecast_lower or 'clear' in forecast_lower:
+        return '☀️'
+    elif 'cloud' in forecast_lower and 'partly' in forecast_lower:
+        return '⛅'
+    elif 'cloud' in forecast_lower:
+        return '☁️'
+    elif 'rain' in forecast_lower or 'shower' in forecast_lower:
+        return '🌧️'
+    elif 'storm' in forecast_lower or 'thunder' in forecast_lower:
+        return '⛈️'
+    elif 'snow' in forecast_lower:
+        return '❄️'
+    elif 'fog' in forecast_lower:
+        return '🌫️'
+    elif 'wind' in forecast_lower:
+        return '💨'
+    else:
+        return '🌤️'
+
+# Post tweet to Twitter
+def post_weather_update(client):
+    """
+    Main function to post weather update to Twitter
+    """
+    try:
+        # Get weather forecast
+        weather_text = get_weather_forecast()
+        
+        if not weather_text:
+            logging.error("Could not fetch weather data, skipping tweet")
+            return False
+        
+        # Post to Twitter
+        response = client.create_tweet(text=weather_text)
+        logging.info(f"Tweet posted successfully! Tweet ID: {response.data['id']}")
+        logging.info(f"Tweet content: {weather_text}")
+        return True
+        
+    except tweepy.TweepyException as e:
+        logging.error(f"Twitter API error: {e}")
+        return False
+    except Exception as e:
+        logging.error(f"Unexpected error posting tweet: {e}")
+        return False
+
+# Schedule job wrapper
+def scheduled_post(client):
+    """Wrapper function for scheduled posts"""
+    logging.info("=== Scheduled weather post triggered ===")
+    post_weather_update(client)
+
+# Main function to run the bot
+def main():
+    """
+    Main bot execution - initializes Twitter and runs scheduler
+    """
+    logging.info("=== Weather Twitter Bot Starting ===")
+    
+    # Validate environment variables
+    if not all([TWITTER_API_KEY, TWITTER_API_SECRET, 
+                TWITTER_ACCESS_TOKEN, TWITTER_ACCESS_SECRET]):
+        logging.error("Missing Twitter API credentials in .env file!")
+        print("ERROR: Please ensure all Twitter credentials are set in .env file")
+        return
+    
+    # Initialize Twitter client
+    client = initialize_twitter()
+    if not client:
+        logging.error("Failed to initialize Twitter client. Exiting.")
+        return
+    
+    # Post immediate test tweet on startup
+    logging.info("Posting initial weather update...")
+    post_weather_update(client)
+    
+    # Schedule regular posts
+    # Post at 7 AM, 12 PM, and 6 PM daily
+    schedule.every().day.at("07:00").do(scheduled_post, client=client)
+    schedule.every().day.at("12:00").do(scheduled_post, client=client)
+    schedule.every().day.at("18:00").do(scheduled_post, client=client)
+    
+    logging.info("Bot scheduled to post at 7:00 AM, 12:00 PM, and 6:00 PM daily")
+    logging.info("Bot is now running. Press Ctrl+C to stop.")
+    
+    # Keep the bot running
+    try:
+        while True:
+            schedule.run_pending()
+            time.sleep(60)  # Check every minute
+    except KeyboardInterrupt:
+        logging.info("Bot stopped by user")
+        print("\nBot stopped gracefully")
+
+if __name__ == "__main__":
+    main()

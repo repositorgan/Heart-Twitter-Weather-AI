@@ -2,7 +2,7 @@ from openai import OpenAI
 
 client = OpenAI()
 
-def generate_weather_story(regional_data, alerts):
+def generate_weather_story(region.json, alerts):
     prompt = f"""
 You are a trending professional meteorologist.
 
@@ -18,7 +18,7 @@ Rules:
 - Do not exceed 240 characters
 
 Regional Forecasts:
-{regional_data}
+{region.json}
 
 Active Alerts:
 {alerts}
